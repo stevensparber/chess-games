@@ -1,0 +1,1022 @@
+---
+title: "Lichess Game Analysis"
+author: "Steven Sparber"
+date: '2023-01-06'
+output: html_document
+---
+
+## Reading in Data
+
+```{r}
+library(dplyr)
+library(stringr)
+
+games <- read.table("Chess Games (6.1.21 - 11.30.22).pgn", sep="\n")
+
+str(games)
+```
+
+## Data Cleaning
+
+#### First steps in cleaning and creating data frame
+
+```{r}
+
+# Removal of brackets
+
+games$V1 = gsub("\\[|\\]", "", games$V1)
+
+# Removal of rows with unnecessary information
+
+games = games %>%
+  filter(!grepl('https|UTC|ECO|Title', V1))
+
+# Splitting the one long column into 14 separate ones based on the row number where information repeats
+
+games = as.data.frame(split(games, 1:14))
+
+colnames(games) = c("Game_Type", "Date", "White", "Black", "Result", "White_Rating", "Black_Rating", "White_Rating_Diff", "Black_Rating_Diff", "Variant", "Time_Control", "Opening", "Termination", "Moves")
+
+# Creating a backwards ID column since the games are in reverse chronological order:
+
+games$ID = nrow(games):1
+
+```
+
+#### Skimming the data frame
+
+```{r}
+
+library(skimr)
+
+skim(games)
+
+```
+
+#### Cleaning the Game_Type column
+
+```{r}
+## Seeing all values in Game_Type column
+
+table(games$Game_Type)
+
+## Removing unnecessary words from Game_Type column and converting to a factor variable
+
+games$Game_Type = gsub("Event | game", "", games$Game_Type)
+games$Game_Type = as.factor(games$Game_Type)
+
+## Creating binary indicator columns for game type
+
+games$Hourly_Blitz_Arena = as.numeric(games$Game_Type == "Hourly Blitz Arena")
+games$Hourly_SuperBlitz_Arena = as.numeric(games$Game_Type == "Hourly SuperBlitz Arena")
+games$Rated_Blitz = as.numeric(games$Game_Type == "Rated Blitz")
+games$Rated_Bullet = as.numeric(games$Game_Type == "Rated Bullet")
+games$Rated_Rapid = as.numeric(games$Game_Type == "Rated Rapid")
+
+## Viewing cleaned columns
+
+games %>%
+  select(Game_Type, Hourly_Blitz_Arena, Hourly_SuperBlitz_Arena, Rated_Blitz, Rated_Bullet, Rated_Bullet, Rated_Rapid)
+```
+
+#### Cleaning Date column
+
+```{r}
+## Removing unnecessary words from Date column and converting to a date variable
+
+games$Date = gsub("Date ", "", games$Date)
+games$Date = as.Date(str_replace_all(games$Date, '\\.', '/'))
+
+## Creating "Weekday" column from "Date" column
+
+games$Day = factor(weekdays(games$Date), ordered = TRUE, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+## Creating Month & Year column from "Date" column
+
+library(zoo)
+games$Month_Year = as.yearmon(games$Date, "%Y-%m") 
+
+## Creating binary columns for weekdays
+
+games$Monday = (as.numeric(games$Day == 'Monday'))
+games$Tuesday = (as.numeric(games$Day == 'Tuesday'))
+games$Wednesday = (as.numeric(games$Day == 'Wednesday'))
+games$Thursday = (as.numeric(games$Day == 'Thursday'))
+games$Friday = (as.numeric(games$Day == 'Friday'))
+games$Saturday = (as.numeric(games$Day == 'Saturday'))
+games$Sunday = (as.numeric(games$Day == 'Sunday'))
+
+## Viewing cleaned columns
+
+games %>%
+  select(Date, Month_Year, Day, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday)
+```
+
+#### Cleaning for columns: White, Black, Result, White_Rating, Black_Rating, White_Rating_Diff, Black_Rating_Diff
+
+```{r}
+## Removing unnecessary words from "White" and "Black" column
+
+games$White = gsub("White ", "", games$White)
+games$Black = gsub("Black ", "", games$Black)
+
+## Removing unnecessary words from Result column
+
+games$Result = gsub("Result ", "", games$Result)
+
+## Removing unnecessary words from White_Rating and Black_Rating columns, then converting to a numeric variable
+
+games$White_Rating = as.numeric(gsub("WhiteElo ", "", games$White_Rating))
+games$Black_Rating = as.numeric(gsub("BlackElo ", "", games$Black_Rating))
+
+## Removing unnecessary words from White_Rating_Diff and Black_Rating_Diff column, then converting to a numeric variable
+
+games$White_Rating_Diff = as.numeric(gsub("WhiteRatingDiff ", "", games$White_Rating_Diff))
+games$Black_Rating_Diff = as.numeric(gsub("BlackRatingDiff ", "", games$Black_Rating_Diff))
+
+```
+
+#### Removing Variant column
+
+```{r}
+table(games$Variant) #Only one, so we can remove this column
+
+games = games %>%
+  select(-Variant)
+```
+
+#### Cleaning Time_Control column
+
+```{r}
+## Inspecting Time_Control column and creating transformations
+
+table(games$Time_Control) #Looks like this is in seconds. We'll also need to create an "increment" column. Also should remove, "TimeControl"
+
+# Removing unnecessary words from Time_Control column
+
+games$Time_Control = gsub("TimeControl ", "", games$Time_Control)
+
+# Splitting Time_Control column into minutes and increment
+
+library(tidyr)
+
+games = separate(data = games, col = Time_Control, into = c("Time_Control_Minutes", "Time_Control_Increment"), sep = "\\+", remove = FALSE)
+
+# Converting original Time_Control column into a factor variable and new Time_Control columns to numeric
+
+games$Time_Control = as.factor(games$Time_Control)
+games$Time_Control_Minutes = as.numeric(games$Time_Control_Minutes)
+games$Time_Control_Increment = as.numeric(games$Time_Control_Increment)
+```
+
+#### Cleaning Opening column
+
+```{r}
+## Removing unnecessary words from Opening column and creating Opening_Type and Opening_Variation columns
+
+games$Opening = gsub("Opening ", "", games$Opening)
+
+games = games %>%
+  separate(col = Opening, into = c("Opening_Type", "Opening_Variation"), sep = ": ", remove = FALSE)
+
+## Converting all opening columns into factors
+
+games$Opening = as.factor(games$Opening)
+games$Opening_Type = as.factor(games$Opening_Type)
+games$Opening_Variation = as.factor(games$Opening_Variation)
+
+## Creating e4 and d4 opening columns
+
+games$e4 = as.numeric(str_detect(games$Moves, '1. e4'))
+games$d4 = as.numeric(str_detect(games$Moves, '1. d4'))
+
+## Viewing new and cleaned columns
+
+games %>%
+  select(Opening, Opening_Type, Opening_Variation)
+```
+
+#### Cleaning Termination column
+
+```{r}
+## Removing unnecessary words from Termination column and converting to factor, note we keep all games
+
+games$Termination = as.factor(gsub("Termination ", "", games$Termination))
+```
+
+#### Cleaning and creation of columns to show results
+
+```{r}
+## Creating columns to show whether I played as black or white
+
+games = games %>%
+  mutate(Played_White = if_else(White == 'username', 1, 0),
+         Played_Black = if_else(Black == 'username', 1, 0))
+
+## Separating white and black win columns into binary variables
+
+games = separate(data = games, col = Result, into = c("White_Result", "Black_Result"), sep = "\\-")
+
+# Assigning a value of 0.5 to draws and making it a numeric value
+
+games$White_Result = as.numeric(gsub('1/2', '0.5', games$White_Result))
+games$Black_Result = as.numeric(gsub('1/2', '0.5', games$Black_Result))
+
+# Creating columns to show if I won or loss, overall and as black or white
+
+games = games %>%
+  mutate(I_Win_As_White = if_else(Played_White + White_Result == 2, 1, 0),
+         I_Win_As_Black = if_else(Played_Black + Black_Result == 2, 1, 0),
+         I_Lose_As_White = if_else(I_Win_As_White == 0, 1, 0),
+         I_Lose_As_Black = if_else(I_Win_As_Black == 0, 1, 0),
+         I_Draw_As_White = if_else(Played_White + White_Result == 1.5, 1, 0),
+         I_Draw_As_Black = if_else(Played_Black + Black_Result == 1.5, 1, 0),
+         My_Result = if_else(I_Win_As_White + I_Win_As_Black == 1, 1,
+                             if_else(I_Draw_As_White + I_Draw_As_Black == 1 , 0.5, 0)),
+         My_Result_Cat = as.factor(if_else(My_Result == 1, "Win",
+                                           if_else(My_Result == 0.5, "Draw", "Loss"))),
+         I_Win = if_else(My_Result == 1, 1, 0),
+         I_Lose = if_else(My_Result == 0, 1, 0),
+         I_Draw = if_else(My_Result == 0.5, 1, 0))
+
+## Creating extra column to show if I was black or white
+
+games = games %>%
+  mutate(White_or_Black = as.factor(if_else(White == "username", "White", "Black")))
+
+## Viewing new and cleaned columns
+
+games %>%
+  select(Played_White, Played_Black,
+         White_Result, Black_Result,
+         My_Result, My_Result_Cat,
+         I_Win, I_Lose, I_Draw)
+
+```
+
+#### Creating columns to show total number of moves of major and minor pieces as well as king
+
+```{r}
+
+## Removing result from Moves column
+
+games$Moves = str_remove_all(games$Moves, ' 1-0')
+games$Moves = str_remove_all(games$Moves, ' 0-1')
+games$Moves = str_remove_all(games$Moves, ' 1\\/2-1\\/2')
+
+## Creating column for number of moves. We do this by counting and dividing spaces using the stringr library and str_count function.
+
+games = games %>%
+  mutate(Num_Moves = as.numeric(ceiling((str_count(Moves, " "))/3)))
+
+## Creating columns for major and minor piece moves and King
+
+games = games %>%
+  mutate(White_Bishop_Moves = str_count(Moves, '\\. B'),
+         White_Knight_Moves = str_count(Moves, '\\. N'),
+         White_Rook_Moves = str_count(Moves, '\\. R'),
+         White_King_Moves = str_count(Moves, '\\. K'),
+         White_Queen_Moves = str_count(Moves, '\\. Q'),
+         Bishop_Moves = str_count(Moves,' B'),
+         Knight_Moves = str_count(Moves, ' N'),
+         Rook_Moves = str_count(Moves, ' R'),
+         King_Moves = str_count(Moves, ' K'),
+         Queen_Moves = str_count(Moves, ' Q'),
+         Black_Bishop_Moves = Bishop_Moves - White_Bishop_Moves,
+         Black_Knight_Moves = Knight_Moves - White_Knight_Moves,
+         Black_Rook_Moves = Rook_Moves - White_Rook_Moves,
+         Black_King_Moves = King_Moves - White_King_Moves,
+         Black_Queen_Moves = Queen_Moves - White_Queen_Moves,
+         My_Bishop_Moves = if_else(Played_White == 1, White_Bishop_Moves, Black_Bishop_Moves),
+         My_Knight_Moves = if_else(Played_White == 1, White_Knight_Moves, Black_Knight_Moves),
+         My_Rook_Moves = if_else(Played_White == 1, White_Rook_Moves, Black_Rook_Moves),
+         My_King_Moves = if_else(Played_White == 1, White_King_Moves, Black_King_Moves),
+         My_Queen_Moves = if_else(Played_White == 1, White_Queen_Moves, Black_Queen_Moves),
+         Opponent_Bishop_Moves = if_else(Played_White == 0, White_Bishop_Moves, Black_Bishop_Moves),
+         Opponent_Knight_Moves = if_else(Played_White == 0, White_Knight_Moves, Black_Knight_Moves),
+         Opponent_Rook_Moves = if_else(Played_White == 0, White_Rook_Moves, Black_Rook_Moves),
+         Opponent_King_Moves = if_else(Played_White == 0, White_King_Moves, Black_King_Moves),
+         Opponent_Queen_Moves = if_else(Played_White == 0, White_Queen_Moves, Black_Queen_Moves))
+
+## Viewing cleaned and new columns
+
+games %>%
+  select(Num_Moves, My_Bishop_Moves, My_Knight_Moves, My_Rook_Moves, My_Queen_Moves, My_King_Moves)
+
+```
+
+#### Creating columns to show number of checks
+
+```{r}
+games = games %>%
+  mutate(Black_Checks = str_count(Moves, '\\+ [0-9]'),
+         Total_Checks = str_count(Moves, '\\+'),
+         White_Checks = Total_Checks - Black_Checks,
+         My_Checks = if_else(Played_White == 1, White_Checks, Black_Checks),
+         Opponent_Checks = if_else(Played_White == 0, White_Checks, Black_Checks))
+```
+
+#### Creating columns to show king and queenside castling
+
+```{r}
+games = games %>%
+  mutate(Black_Kingside_Castled = as.numeric(str_detect(Moves, ' O-O [0-9]')),
+         Black_Queenside_Castled = as.numeric(str_detect(Moves, ' O-O-O [0-9]')),
+         White_Kingside_Castled = as.numeric(str_detect(Moves, '\\. O-O ')),
+         White_Queenside_Castled = as.numeric(str_detect(Moves, '\\. O-O-O ')),
+         My_Kingside_Castled = if_else(Played_White == 1, White_Kingside_Castled, Black_Kingside_Castled),
+         My_Queenside_Castled = if_else(Played_White == 1, White_Queenside_Castled, Black_Queenside_Castled),
+         Opponent_Kingside_Castled = if_else(Played_White == 0, White_Kingside_Castled, Black_Kingside_Castled),
+         Opponent_Queenside_Castled = if_else(Played_White == 0, White_Queenside_Castled, Black_Queenside_Castled),
+         Kingside_Castled_vs_Queenside_Castled = if_else(My_Kingside_Castled + Opponent_Queenside_Castled == 2, 1, 0),
+         Queenside_Castled_vs_Kingside_Castled = if_else(My_Queenside_Castled + Opponent_Kingside_Castled == 2, 1, 0),
+         Opposite_Castles = if_else(Kingside_Castled_vs_Queenside_Castled + Queenside_Castled_vs_Kingside_Castled > 0, 1, 0))
+```
+
+#### Removing games with low number of moves
+
+```{r}
+
+summary(games$Num_Moves)
+
+hist(x = games$Num_Moves,
+     breaks = 20,
+     freq = TRUE,
+     col = "lightblue",
+     xlab = "Number of Moves",
+     ylab = "Games",
+     main = "Frequency of Games by Number of Moves",
+     ylim = c(0,400))
+
+games = games %>%
+  filter(Num_Moves > 5)
+
+```
+
+#### Creating columns for rating differences
+
+```{r}
+## Creating columns for my and my opponent's ratings and rating differences
+
+games = games %>%
+  mutate(My_Rating = if_else(White == "username", White_Rating, Black_Rating),
+         Oponnent_Rating = if_else(White == "username", Black_Rating, White_Rating),
+         Rating_Diff_vs_Opponent = My_Rating - Oponnent_Rating)
+
+# Creating categories for rating differences
+
+summary(games$Rating_Diff_vs_Opponent)
+
+games = games %>%
+  mutate(Rating_Diff_vs_Opponent_Cat = cut(Rating_Diff_vs_Opponent,
+                                           breaks = c(-1000, -100, -75, -50, -25, 0, 25, 50, 75, 100, 1000),
+                                           labels = c("-100 or Less", "-99 to -75", "-74 to -50", "-49 to -25", "-25 to 0", "1 to 25", "26 to 50", "51 to 75", "76 to 100", "101 or Higher")))
+```
+
+#### Creating variables to show result of last game
+
+```{r}
+## Sort games from earliest to latest using ID column from earlier
+
+games = games %>%
+  arrange(ID)
+
+## Adding columns for previous result and rating changes
+
+games = games %>%
+  mutate(My_Rating_Change = if_else(Played_White == 1, White_Rating_Diff, Black_Rating_Diff))
+
+games = games %>%
+  mutate(Previous_Result = lag(games$My_Result),
+         Previous_Rating_Change = lag(games$My_Rating_Change))
+
+## Viewing new columns
+
+games %>%
+  select(ID, My_Result, My_Rating_Change, Previous_Result, Previous_Rating_Change)
+```
+
+#### Examining the finalized data frame
+
+```{r}
+skim(games)
+```
+## Data Exploration & Insights
+
+#### On which side of the board do I play better and is there a significant difference in win percentage?
+
+```{r}
+## Performance as white
+
+games %>%
+  filter(White_or_Black == "White") %>%
+  group_by(My_Result_Cat) %>%
+  summarize(Games = n()) %>%
+  mutate(Percentage = Games/sum(Games)) %>%
+  arrange(desc(Percentage))
+
+## Performance as black
+
+games %>%
+  filter(White_or_Black == "Black") %>%
+  group_by(My_Result_Cat) %>%
+  summarize(Games = n()) %>%
+  mutate(Percentage = Games/sum(Games)) %>%
+  arrange(desc(Percentage))
+
+## Significant difference between wins as black or white?
+
+games.as.white = games %>%
+  filter(White_or_Black == "White") %>%
+  nrow()
+
+wins.as.white = sum(games$I_Win_As_White)
+
+games.as.black = games %>%
+  filter(White_or_Black == "Black") %>%
+  nrow()
+
+wins.as.black = sum(games$I_Win_As_Black)
+
+prop.test(x = c(wins.as.white, wins.as.black), n = c(games.as.white, games.as.black))
+
+```
+#### Which openings may be under or over-utilized in my repertoire as white?
+
+```{r}
+### What are the openings I play most as white and my win percentage in each?
+
+library(ggplot2)
+  
+## Top 15 openings played as white
+
+games %>%
+  filter(Played_White == 1) %>%
+  group_by(Opening_Type) %>%
+  summarize(Games = n()) %>%
+  top_n(n = 15, wt = Games) %>%
+  ggplot(mapping = aes(x = reorder(Opening_Type, -Games),
+                       y = Games,
+                       fill = Opening_Type,
+                       label = Games)) +
+  geom_col() +
+  geom_text(nudge_y = 15, size = 3, fontface = "bold") +
+  labs(title = 'Top 15 Openings Played as White',
+       x = 'Openings')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        panel.background = element_blank(),
+        legend.position = "none")
+
+## Win percentage vs. total games for top 15 openings played as white
+
+library(scales)
+library(ggrepel)
+
+games %>%
+  filter(Played_White == 1) %>%
+  group_by(Opening_Type) %>%
+  summarize(Games = n(),
+            Wins = sum(I_Win),
+            Win.Perc = round((Wins/Games),2)) %>%
+  top_n(n = 15, wt = Games) %>%
+  ggplot(mapping = aes(x = Games,
+                       y = percent(x = Win.Perc, accuracy = 1L),
+                       col = Opening_Type,
+                       label = Opening_Type)) +
+  geom_text_repel(size = 3.25, fontface = "bold") +
+  geom_point(col = "white") +
+  labs(title = 'Win Percentage in Top 15 Openings Played as White',
+       x = 'Games',
+       y = 'Win Percentage')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        panel.background = element_blank(),
+        legend.position = "none")
+```
+#### Which openings may be under or over-utilized in my repertoire as black?
+
+```{r}
+## Top 15 Openings Played as Black
+
+games %>%
+  filter(Played_Black == 1) %>%
+  group_by(Opening_Type) %>%
+  summarize(Games = n()) %>%
+  top_n(n = 15, wt = Games) %>%
+  ggplot(mapping = aes(x = reorder(Opening_Type, -Games),
+                       y = Games,
+                       fill = Opening_Type,
+                       label = Games)) +
+  geom_col() +
+  geom_text(nudge_y = 15, size = 3, fontface = "bold") +
+  labs(title = 'Top 15 Openings Played as Black',
+       x = 'Openings')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        panel.background = element_blank(),
+        legend.position = "none")
+
+## Win Percentage vs. Total Games for Top 15 Openings Played as Black
+
+library(scales)
+library(ggrepel)
+
+games %>%
+  filter(Played_Black == 1) %>%
+  group_by(Opening_Type) %>%
+  summarize(Games = n(),
+            Wins = sum(I_Win),
+            Win.Perc = round((Wins/Games),2)) %>%
+  top_n(n = 15, wt = Games) %>%
+  ggplot(mapping = aes(x = Games,
+                       y = percent(x = Win.Perc, accuracy = 1L),
+                       col = Opening_Type,
+                       label = Opening_Type)) +
+  geom_text_repel(size = 3.25, fontface = "bold") +
+  geom_point(col = "white") +
+  labs(title = 'Win Percentage in Top 15 Openings Played as Black',
+       x = 'Games',
+       y = 'Win Percentage')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        panel.background = element_blank(),
+        legend.position = "none")
+```
+#### During which days of the week is my play most effective?
+
+```{r}
+
+# Create data frame to show total number of games by day
+
+day.games = games %>%
+  group_by(Day) %>%
+  summarize(Total.Games = n())
+
+# Create column to chart using inner join to show win, draw, loss percentage
+
+games %>%
+  group_by(Day, My_Result_Cat) %>%
+  summarize(Games = n()) %>%
+  inner_join(day.games, by = c("Day" = "Day")) %>%
+  mutate(Perc = Games/Total.Games) %>%
+  ggplot(mapping = aes(x = Day,
+                       y = Games,
+                       fill = My_Result_Cat,
+                       label = percent(x = Perc, accuracy = 1L))) +
+  geom_col(position = "stack") +
+  geom_text(size = 2.75, position = position_stack(0.5), fontface = "bold") +
+  labs(title = 'Results by Day of Week',
+       x = 'Day of Week')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        panel.background = element_blank())+
+  guides(fill=guide_legend(title='My Result'))+
+  scale_fill_manual(values = c("grey", "pink", "cornflowerblue"))
+```
+
+#### How much more effective is my play during the weekend and is there a significant difference in win percentage vs. weekdays?
+
+```{r}
+# Creating two new variables for weekday and weekend
+
+games$Weekday = as.numeric(str_detect(games$Day, 'Monday|Tuesday|Wednesday|Thursday|Friday'))
+games$Weekend = as.numeric(str_detect(games$Day, 'Saturday|Sunday'))
+
+# Results during weekdays
+
+games %>%
+  filter(Weekday == 1) %>%
+  group_by(My_Result_Cat) %>%
+  summarize(Total = n(),
+            Percentage = round(Total/sum(games$Weekday),2))
+
+# Results during weekends
+
+games %>%
+  filter(Weekend == 1) %>%
+  group_by(My_Result_Cat) %>%
+  summarize(Total = n(),
+            Percentage = round(Total/sum(games$Weekend),2))
+
+# Is there a significant difference in win percentage on weekdays vs. weekends?
+
+prop.test(x = c(824, 482), n = c(sum(games$Weekday), sum(games$Weekend)))
+
+```
+#### How does the distribution of piece moves differ between wins and losses?
+
+```{r}
+
+# Create data frame with "longer" data showing piece moves in preparation for visualization
+
+piece.moves = games %>%
+  select(My_Result_Cat, My_Knight_Moves, My_Bishop_Moves, My_Rook_Moves, My_Queen_Moves, My_King_Moves) %>%
+  filter(My_Result_Cat != "Draw") %>%
+  pivot_longer(cols = c("My_Knight_Moves", "My_Bishop_Moves", "My_Rook_Moves", "My_Queen_Moves", "My_King_Moves"), names_to = "Piece_Moves") %>%
+  mutate(Result_Piece = paste(My_Result_Cat, Piece_Moves, sep = "_")) %>%
+  select(Result_Piece, value) %>%
+  rename("Piece_Moves" = "value")
+
+# Replace original piece move names with labelling more appropriate for visualization
+
+piece.moves$Result_Piece = str_replace_all(string = piece.moves$Result_Piece,
+                                           c("Loss_My_Knight_Moves" = "Knight Moves in Losses",
+                                             "Win_My_Knight_Moves" = "Knight Moves in Wins",
+                                             "Loss_My_Bishop_Moves" = "Bishop Moves in Losses",
+                                             "Win_My_Bishop_Moves" = "Bishop Moves in Wins",
+                                             "Loss_My_Rook_Moves" = "Rook Moves in Losses",
+                                             "Win_My_Rook_Moves" = "Rook Moves in Wins",
+                                             "Loss_My_Queen_Moves" = "Queen Moves in Losses",
+                                             "Win_My_Queen_Moves" = "Queen Moves in Wins",
+                                             "Loss_My_King_Moves" = "King Moves in Losses",
+                                             "Win_My_King_Moves" = "King Moves in Wins"))
+
+# Converting the new variable to an ordered factor so that the visualization will display a specific order
+
+piece.moves$Result_Piece = factor(piece.moves$Result_Piece,
+                                  ordered = TRUE,
+                                  levels = c("Knight Moves in Losses", "Knight Moves in Wins", "Bishop Moves in Losses", "Bishop Moves in Wins", "Rook Moves in Losses", "Rook Moves in Wins", "Queen Moves in Losses", "Queen Moves in Wins", "King Moves in Losses", "King Moves in Wins"))
+
+# Creating a multi-box plot visualization of piece moves
+
+ggplot(data = piece.moves,
+       mapping = aes(x = Result_Piece, y = Piece_Moves, fill = Result_Piece))+ 
+  geom_boxplot(outlier.shape = NA) +
+  stat_summary(fun = "mean", geom = "point", size = 1, color = "blue") +
+  ylim(c(0, 15)) +
+  labs(x = "Pieces & Results",
+       y = "Piece Moves",
+       title = "Distribution of Piece Moves for Wins vs. Losses") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        legend.position = "none")+
+  scale_fill_manual(values = c("lightblue2", "lightblue2","lightgreen", "lightgreen","pink", "pink","khaki", "khaki","grey", "grey"))
+
+# Is the difference between pieces moves in wins vs. losses statistically significant?
+
+# First, I create a data frame with just piece moves and results, filtered to only wins and losses so that the variable only has two levels.
+
+pieces.results = games %>%
+  select(My_Result_Cat, My_Bishop_Moves, My_Knight_Moves, My_Rook_Moves, My_Queen_Moves, My_King_Moves) %>%
+  filter(My_Result_Cat != "Draw")
+
+# Employ two-sample t-tests
+
+knight = t.test(My_Bishop_Moves~My_Result_Cat, data = pieces.results)
+bishop = t.test(My_Knight_Moves~My_Result_Cat, data = pieces.results)
+rook = t.test(My_Rook_Moves~My_Result_Cat, data = pieces.results)
+queen = t.test(My_Queen_Moves~My_Result_Cat, data = pieces.results)
+king = t.test(My_King_Moves~My_Result_Cat, data = pieces.results)
+
+# Assign values for defining means and differences between means
+
+knight.losses = piece.moves %>% filter(Result_Piece == "Knight Moves in Losses")
+mean.knight.losses = round(mean(knight.losses$Piece_Moves),2)
+knight.wins = piece.moves %>% filter(Result_Piece == "Knight Moves in Wins")
+mean.knight.wins = round(mean(knight.wins$Piece_Moves), 2)
+knight.wins.vs.losses = round((mean.knight.wins - mean.knight.losses),2)
+
+bishop.losses = piece.moves %>% filter(Result_Piece == "Bishop Moves in Losses")
+mean.bishop.losses = round(mean(bishop.losses$Piece_Moves),2)
+bishop.wins = piece.moves %>% filter(Result_Piece == "Bishop Moves in Wins")
+mean.bishop.wins = round(mean(bishop.wins$Piece_Moves),2)
+bishop.wins.vs.losses = round((mean.bishop.wins - mean.bishop.losses),2)
+
+rook.losses = piece.moves %>% filter(Result_Piece == "Rook Moves in Losses")
+mean.rook.losses = round(mean(rook.losses$Piece_Moves), 2)
+rook.wins = piece.moves %>% filter(Result_Piece == "Rook Moves in Wins")
+mean.rook.wins = round(mean(rook.wins$Piece_Moves), 2)
+rook.wins.vs.losses = round((mean.rook.wins - mean.rook.losses),2)
+
+queen.losses = piece.moves %>% filter(Result_Piece == "Queen Moves in Losses")
+mean.queen.losses = round(mean(queen.losses$Piece_Moves), 2)
+queen.wins = piece.moves %>% filter(Result_Piece == "Queen Moves in Wins")
+mean.queen.wins = round(mean(queen.wins$Piece_Moves), 2)
+queen.wins.vs.losses = round((mean.queen.wins - mean.queen.losses), 2)
+
+king.losses = piece.moves %>% filter(Result_Piece == "King Moves in Losses")
+mean.king.losses = round(mean(king.losses$Piece_Moves), 2)
+king.wins = piece.moves %>% filter(Result_Piece == "King Moves in Wins")
+mean.king.wins = round(mean(king.wins$Piece_Moves), 2)
+king.wins.vs.losses = round((mean.king.wins - mean.king.losses),2)
+
+# Create data frame to identify which are statistically signficant
+
+Pieces = c("Knight", "Bishop", "Rook", "Queen", "King")
+Avg_Moves_in_Wins = c(mean.knight.wins, mean.bishop.wins, mean.rook.wins, mean.queen.wins, mean.king.wins)
+Avg_Moves_in_Losses = c(mean.knight.losses, mean.bishop.losses, mean.rook.losses, mean.queen.losses, mean.king.losses)
+Difference = Avg_Moves_in_Wins - Avg_Moves_in_Losses
+P_Values = c(round(knight$p.value,3), round(bishop$p.value, 3), round(rook$p.value, 3), round(queen$p.value, 3), round(king$p.value, 3))
+
+Pieces_P_Values = data.frame(Pieces, Avg_Moves_in_Wins, Avg_Moves_in_Losses, Difference, P_Values) %>%
+  mutate(Significant = P_Values<=0.05); Pieces_P_Values
+```
+
+#### Does the number of checks by my opponent or myself differ between wins and losses, and if so, is there a significant difference between the two?
+
+```{r}
+
+wins = games %>%
+  filter(My_Result_Cat == "Win")
+
+losses = games %>%
+  filter(My_Result_Cat == "Loss")
+
+t.test(wins$My_Checks, losses$My_Checks)
+t.test(wins$Opponent_Checks, losses$Opponent_Checks)
+
+```
+
+#### How common are repeated results, and are winning streaks or losing streaks more common?
+
+```{r}
+# Percentage of games with repeated results, repeated wins and repeated losses
+
+games %>%
+  select(ID, My_Result, Previous_Result) %>%
+  filter(!is.na(Previous_Result)) %>%
+  mutate(Repeated_Result = if_else(My_Result == Previous_Result, 1, 0),
+         Repeated_Win = if_else(My_Result + Previous_Result == 2, 1, 0),
+         Repeated_Loss = if_else(My_Result + Previous_Result == 0, 1, 0)) %>%
+  summarize(Repeated_Results_All_Games = round((sum(Repeated_Result)/n()),2),
+            Repeated_Wins_All_Games = round(sum(Repeated_Win)/n(),2),
+            Repeated_Losses_All_Games = round(sum(Repeated_Loss)/n(),2))
+
+# Percentage of wins which were repeated wins and percentage of losses which were repeat losses
+
+games %>%
+  select(ID, My_Result, Previous_Result) %>%
+  filter(!is.na(Previous_Result)) %>%
+  mutate(Repeated_Result = if_else(My_Result == Previous_Result, 1, 0),
+         Repeated_Win = if_else(My_Result + Previous_Result == 2, 1, 0),
+         Repeated_Loss = if_else(My_Result + Previous_Result == 0, 1, 0)) %>%
+  summarize(Repeated_Wins_Winning_Games = round(sum(Repeated_Win)/sum(games$I_Win),2),
+            Repeated_Losses_Losing_Games = round(sum(Repeated_Loss)/sum(games$I_Lose),2))
+
+# Correlation testing
+
+library(rstatix)
+
+cor_test(data = games,
+         vars = 'My_Result',
+         vars2 = c('Previous_Result', 'Previous_Rating_Change'),
+         use = "complete.obs")
+
+# Statistical significance testing
+
+games %>%
+  select(ID, My_Result, Previous_Result) %>%
+  filter(!is.na(Previous_Result)) %>%
+  mutate(Repeated_Win = if_else(My_Result + Previous_Result == 2, 1, 0),
+         Repeated_Loss = if_else(My_Result + Previous_Result == 0, 1, 0)) %>%
+  summarize(Repeated_Wins_Total = sum(Repeated_Win),
+            Repeated_Losses_Total = sum(Repeated_Loss))
+
+prop.test(x = c(663, 564), n = c(sum(games$I_Win), sum(games$I_Lose)))
+```
+
+#### Rating fluctuations
+
+```{r}
+blitz.games = games %>%
+  filter(str_detect(Game_Type, 'Blitz'),
+         Month_Year != 'Dec 2022')
+
+boxplot(My_Rating ~ Month_Year, data = blitz.games,
+        xlab = "Month & Year",
+        ylab = "Rating",
+        main = "Boxplots of Blitz Ratings by Month",
+        col = "lightblue",
+        outline = FALSE)
+
+summary(blitz.games$My_Rating)
+
+### Seeing months where I had the biggest differences in ratings
+
+blitz.games %>%
+  group_by(Month_Year) %>%
+  summarize(Rating_Range = max(My_Rating) - min(My_Rating)) %>%
+  ggplot(mapping = aes(x = Month_Year,
+                     y = Rating_Range,
+                     label = Rating_Range)) +
+  geom_col(fill = "cornflowerblue") +
+  ylim(0, 150) +
+  geom_text(nudge_y = -10, colour = "white", size = 3) +
+  labs(title = 'Rating Range by Month',
+       x = 'Month & Year',
+       y = 'Rating Range')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        panel.background = element_blank(),
+        legend.position = "none")
+  
+```
+## Predictive Modeling & Inferences
+
+#### Feature Selection: Examining bivariate correlations to identify sources of collinearity
+
+```{r}
+
+## Creating data frame with features of interest to examine correlations
+
+games.1 = games %>%
+  select(Hourly_Blitz_Arena, Hourly_SuperBlitz_Arena, Rated_Blitz, Rated_Bullet, Rated_Rapid, Rated_Bullet,
+         Weekend, Weekday,
+         Played_White, Played_Black,
+         Num_Moves,
+         My_Bishop_Moves, My_Knight_Moves, My_Rook_Moves, My_Queen_Moves, My_King_Moves,
+         Opponent_Bishop_Moves, Opponent_Knight_Moves, Opponent_Rook_Moves, Opponent_Queen_Moves, Opponent_King_Moves,
+         My_Checks, Opponent_Checks,
+         My_Rating, Oponnent_Rating,
+         Previous_Result, Previous_Rating_Change,
+         I_Win)
+
+## Splitting data into train and test
+
+library(caTools)
+set.seed(100)
+split = sample.split(games.1$I_Win, SplitRatio = 0.7)
+train = games.1[split,]
+test = games.1[!split,]
+
+str(train)
+
+## Examining bivariate correlations
+
+library(rstatix)
+
+cor = cor_test(data = train, use = 'complete.obs') %>%
+  data.frame() %>%
+  filter(var1 != var2)
+
+## Examining correlations with winning binary indicator
+
+cor %>%
+  filter(var1 == 'I_Win') %>%
+  mutate(significant = p <= 0.05) %>%
+  select(var1, var2, cor, significant) %>%
+  filter(significant == 'TRUE') %>%
+  arrange(desc(cor)) %>%
+  View()
+
+## Filtering to strong correlation (higher than 0.7 or or lower than -0.7)
+
+cor %>%
+  filter(abs(cor) >= 0.7,
+         !duplicated(statistic)) %>%
+  arrange(desc(cor))
+
+## Examining correlations with binary indicator for winning the games
+
+cor_test(data = train,
+         vars = 'I_Win',
+         vars2 = c('Previous_Result', 'Previous_Rating_Change', 'Num_Moves',
+                   'Opponent_King_Moves', 'My_King_Moves', 'My_Checks',
+                   'Rated_Bullet', 'My_Rating', 'Weekend',
+                   'Weekday', 'Played_White', 'Played_Black'),
+         use = 'complete.obs') %>%
+  arrange(desc(cor)) %>%
+  mutate(significant = p <= 0.05) %>%
+  select(var1, var2, cor, significant) %>%
+  View()
+
+## Removing redundant features and those which have smaller correlation with I_Win
+
+train = train %>%
+  select(-Previous_Rating_Change, -Num_Moves, -Opponent_King_Moves, -Rated_Bullet, -Weekend, -Played_White) %>%
+  filter(!is.na(Previous_Result))
+```
+
+#### Logistic regression model
+
+```{r}
+
+## Training model
+
+glm1 = glm(I_Win ~ ., data = train, family = "binomial"(link = "logit"))
+
+## Creating predictions for train data
+
+train.pred = predict(glm1, data = train, type = 'response')
+
+## Comparing actual results from train data vs. predicted results
+
+actual.vs.pred = data.frame(Wins = train$I_Win, Probability = train.pred, Predictions = as.numeric(train.pred >= 0.5)) %>%
+  mutate(Correct = as.numeric(Wins == Predictions))
+
+actual.vs.pred[1:10,]
+
+## Calculating accuracy
+
+sum(actual.vs.pred$Correct)/nrow(actual.vs.pred) # 66.3% accuracy
+
+## Creating predictions for test data
+
+test.pred = predict(glm1, newdata = test, type = 'response')
+
+## Comparing actual results from test data vs. predicted results
+
+actual.vs.pred = data.frame(Wins = test$I_Win, Probability = test.pred, Predictions = as.numeric(test.pred > 0.5)) %>%
+  mutate(Correct = as.numeric(Wins == Predictions))
+
+actual.vs.pred[1:10,]
+
+## Calculating accuracy
+
+sum(actual.vs.pred$Correct)/nrow(actual.vs.pred) # 64.4% accuracy
+
+## Inspecting model
+
+summary(glm1)
+
+## Odds ratio
+
+format((exp(glm1$coefficients)-1)*100, scientific = FALSE)
+
+```
+
+#### Decision tree model
+
+```{r}
+## Loading libraries
+
+library(rpart); library(rpart.plot)
+
+## Creating model based on train data
+
+tree1 = rpart(I_Win ~ ., data = train, method = "class")
+
+## Prediction accuracy on train data
+
+pred1.prob = predict(tree1, data = train, type = "prob")
+pred1.class = predict(tree1, data = train, type = "class")
+train.results = train$I_Win
+
+data.frame(train.results, pred1.prob, pred1.class) %>%
+  mutate(Correct_Prediction = if_else(train.results == pred1.class, 1, 0)) %>%
+  summarize(sum(Correct_Prediction)/n()) #65%
+
+## Prediction accuracy on test data
+
+pred1.prob = predict(tree1, newdata = test, type = "prob")
+pred1.class = predict(tree1, newdata = test, type = "class")
+test.results = test$I_Win
+
+data.frame(test.results, pred1.prob, pred1.class) %>%
+  mutate(Correct_Prediction = if_else(test.results == pred1.class, 1, 0)) %>%
+  summarize(sum(Correct_Prediction)/n()) #63%
+
+## Inspecting model and variable importance
+
+summary(tree1)
+
+rpart.plot(tree1)
+
+tree1$variable.importance
+
+```
+
+#### Random forest model
+
+```{r}
+
+## Loading library and setting seed
+
+library(randomForest)
+set.seed(100)
+
+## Creating model based on train data
+
+forest1 = randomForest(as.factor(I_Win)~., data = train, ntree = 1000)
+
+## Predictions using train data
+
+pred_forest_prob = predict(forest1, type = "prob")
+pred_forest_class = predict(forest1, type = "class")
+
+data.frame(train$I_Win, pred_forest_prob, pred_forest_class) %>%
+  mutate(correct_prediction = if_else(train.I_Win == pred_forest_class, 1, 0)) %>%
+  summarize(sum(correct_prediction)/n()) #64%
+
+## Predictions using test data
+
+pred_forest_prob = predict(forest1, newdata = test, type = "prob")
+pred_forest_class = predict(forest1, newdata = test, type = "class")
+
+data.frame(test$I_Win, pred_forest_prob, pred_forest_class) %>%
+  mutate(correct_prediction = if_else(test.I_Win == pred_forest_class, 1, 0)) %>%
+  summarize(sum(correct_prediction)/n()) #62%
+
+## Inspecting variable importance
+
+forest1$importance
+
+varImpPlot(forest1)
+```
+
+```
+
+
